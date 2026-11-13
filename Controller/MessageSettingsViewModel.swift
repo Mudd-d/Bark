@@ -7,50 +7,225 @@
 //
 
 import Foundation
-import RxSwift
+import Material
+import RealmSwift
 import RxCocoa
 import RxDataSources
+import RxSwift
+import SwiftyJSON
 
 class MessageSettingsViewModel: ViewModel, ViewModelType {
     struct Input {
-        
+        var itemSelected: Driver<MessageSettingItem>
+        var deviceToken: Driver<String?>
+        var backupAction: Driver<Void>
+        var restoreAction: Driver<Data>
+        var viewDidAppear: Observable<Void>
+        var archiveSettingRelay: BehaviorRelay<Bool>
     }
+
     struct Output {
-        var settings:Driver<[SectionModel<String, MessageSettingItem>]>
+        var settings: Driver<[SectionModel<MessageSettingSection, MessageSettingItem>]>
+        var openUrl: Driver<URL>
+        var copyDeviceToken: Driver<String>
+        var exportData: Driver<Data>
     }
+
     func transform(input: Input) -> Output {
-        
-        let settings:[MessageSettingItem] = {
-            var settings = [MessageSettingItem]()
-            settings.append(.label(text: "iCloud"))
-            settings.append(.iCloudStatus)
-            settings.append(.label(text: NSLocalizedString("iCloudSync")))
-            settings.append(.label(text: NSLocalizedString("defaultArchiveSettings")))
-            settings.append(.archiveSetting(viewModel: ArchiveSettingCellViewModel(on: ArchiveSettingManager.shared.isArchive)))
-            settings.append(.label(text: NSLocalizedString("archiveNote")))
+        let restoreSuccess = input
+            .restoreAction
+            .compactMap { data -> Void? in
+                guard let json = try? JSON(data: data), let arr = json.array else {
+                    return nil
+                }
+                guard let realm = try? Realm() else {
+                    return nil
+                }
+                try? realm.write {
+                    for message in arr {
+                        guard let messageObject = Message(json: message) else {
+                            continue
+                        }
+                        realm.add(messageObject, update: .modified)
+                    }
+                }
+                return ()
+            }.asObservable().share()
+
+        let settings: [SectionModel<MessageSettingSection, MessageSettingItem>] = {
+            var settings = [SectionModel<MessageSettingSection, MessageSettingItem>]()
+            
+            // 历史消息
+            var messageSettings = [MessageSettingItem]()
+            messageSettings.append(.backup(viewModel: MutableTextCellViewModel(
+                title: "\("export".localized)/\("import".localized)",
+                text: Observable.merge([restoreSuccess, input.viewDidAppear])
+                    .map { _ in
+                        if let realm = try? Realm() {
+                            return realm.objects(Message.self)
+                                .count
+                        }
+                        return 0
+                    }
+                    .map { count in
+                        "\(count) \("items".localized)"
+                    }
+                    .asDriver(onErrorDriveWith: .empty())
+            )
+            ))
+            
+            messageSettings.append(.archiveSetting(viewModel: ArchiveSettingCellViewModel(on: input.archiveSettingRelay)))
+            
+            settings.append(
+                SectionModel(
+                    model: MessageSettingSection(header: "historyMessage".localized, footer: "archiveNote".localized),
+                    items: messageSettings
+                )
+            )
+            
+            // 信息
+            var infosettings = [MessageSettingItem]()
+            infosettings.append(.deviceToken(
+                viewModel: MutableTextCellViewModel(
+                    title: "Device Token",
+                    text: input
+                        .deviceToken
+                        .map {
+                            deviceToken in
+                            if let deviceToken = deviceToken {
+                                return "\(deviceToken.prefix(2))****\(deviceToken.suffix(4))"
+                            }
+                            return "unknown".localized
+                        }
+                )
+            ))
+
+            if let infoDict = Bundle.main.infoDictionary,
+               let runId = infoDict["GitHub Run Id"] as? String
+            {
+                infosettings.append(.detail(
+                    title: "Github Run Id",
+                    text: "\(runId)",
+                    textColor: BKColor.grey.darken2,
+                    url: URL(string: "https://github.com/Finb/Bark/actions/runs/\(runId)")
+                ))
+            }
+            settings.append(
+                SectionModel(
+                    model: MessageSettingSection(header: "info".localized, footer: "buildDesc".localized),
+                    items: infosettings
+                )
+            )
+            
+            // 其他
+            var otherSettings = [MessageSettingItem]()
+            otherSettings.append(.detail(
+                title: "faq".localized,
+                text: nil,
+                textColor: nil,
+                url: URL(string: "faqUrl".localized)
+            ))
+
+            otherSettings.append(.detail(
+                title: "documentation".localized,
+                text: nil,
+                textColor: nil,
+                url: URL(string: "docUrl".localized)
+            ))
+            otherSettings.append(.detail(
+                title: "sourceCode".localized,
+                text: nil,
+                textColor: nil,
+                url: URL(string: "https://github.com/Finb/Bark")
+            ))
+            
+            settings.append(
+                SectionModel(
+                    model: MessageSettingSection(header: "other".localized),
+                    items: otherSettings
+                )
+            )
+            
+            // 捐赠
+            var donateSettings = [MessageSettingItem]()
+            donateSettings.append(.donate(title: "oneTimeDonation".localized, productId: "bark.oneTimeDonation.18"))
+            donateSettings.append(.donate(title: "continuousSupport".localized, productId: "bark.continuousSupport.18"))
+            settings.append(
+                SectionModel(
+                    model: MessageSettingSection(
+                        header: "donate".localized,
+                        footer: nil
+                    ),
+                    items: donateSettings
+                )
+            )
+            
             return settings
         }()
-        
-        settings.compactMap { (item) -> ArchiveSettingCellViewModel? in
-            if case let MessageSettingItem.archiveSetting(viewModel) = item {
-                return viewModel
+
+        let openUrl = input.itemSelected.compactMap { item -> URL? in
+            if case MessageSettingItem.detail(_, _, _, let url) = item {
+                return url
             }
             return nil
         }
-        .first?
-        .on
-        .subscribe(onNext: { (on) in
-            ArchiveSettingManager.shared.isArchive = on
-        }).disposed(by: rx.disposeBag)
 
-        return Output(settings: Driver<[SectionModel<String, MessageSettingItem>]>
-                        .just([SectionModel(model: "model", items: settings)]))
+        let deviceTokenValue: BehaviorRelay<String?> = BehaviorRelay(value: nil)
+        input.deviceToken.drive(deviceTokenValue)
+            .disposed(by: rx.disposeBag)
+        let copyDeviceToken = input.itemSelected.compactMap { item -> String? in
+            if case MessageSettingItem.deviceToken = item {
+                return deviceTokenValue.value
+            }
+            return nil
+        }
+
+        // 导出数据
+        let exportSuccess = input.backupAction
+            .asObservable()
+            .subscribe(on: ConcurrentDispatchQueueScheduler(qos: .userInitiated))
+            .compactMap { _ in
+                if let realm = try? Realm() {
+                    let messages = realm.objects(Message.self)
+                        .sorted(byKeyPath: "createDate", ascending: false)
+
+                    var arr = [[String: AnyObject]]()
+                    for message in messages {
+                        arr.append(message.toDictionary())
+                    }
+                    return try? JSON(arr).rawData(options: JSONSerialization.WritingOptions.prettyPrinted)
+                }
+                return nil
+            }
+
+        return Output(
+            settings: Driver<[SectionModel<MessageSettingSection, MessageSettingItem>]>
+                .just(settings),
+            openUrl: openUrl,
+            copyDeviceToken: copyDeviceToken,
+            exportData: exportSuccess.asDriver(onErrorDriveWith: .empty())
+        )
     }
-    
 }
 
 enum MessageSettingItem {
-    case label(text:String)
-    case iCloudStatus
-    case archiveSetting(viewModel:ArchiveSettingCellViewModel)
+    // 普通标题标签
+    case label(text: String)
+    // 默认保存
+    case archiveSetting(viewModel: ArchiveSettingCellViewModel)
+    // 带 详细按钮的 文本cell
+    case detail(title: String?, text: String?, textColor: UIColor?, url: URL?)
+    // 备份还原按钮
+    case backup(viewModel: MutableTextCellViewModel)
+    // deviceToken
+    case deviceToken(viewModel: MutableTextCellViewModel)
+    // 分隔线
+    case spacer(height: CGFloat, color: UIColor?)
+    // 捐赠
+    case donate(title: String, productId: String)
+}
+
+struct MessageSettingSection {
+    var header: String?
+    var footer: String?
 }

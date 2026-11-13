@@ -6,27 +6,27 @@
 //  Copyright © 2018 Fin. All rights reserved.
 //
 
-import UIKit
 import DefaultsKit
+import Foundation
 
-enum BarkSettingKey:String {
-    /// 存放key
+enum BarkSettingKey: String {
+    /// 存放key , 1.2.6 版本`之后`不再使用
     case key = "me.fin.bark.key"
     case servers = "me.fin.bark.servers"
-    case currentServer = "me.fin.bark.servers.current"
     
-    case deviceToken = "me.fin.bark.deviceToken"
+    /// 1.2.6 版本`之前`保存当前 server 的 key，不再使用
+    case currentServer = "me.fin.bark.servers.current"
+    /// 1.2.6 版本`之后`用于保存 server 的 id
+    case currentServerId = "me.fin.bark.servers.currentServerId"
     
     case selectedViewControllerIndex = "me.fin.bark.selectedViewControllerIndex"
 }
 
-class BarkSettings{
+class BarkSettings: @unchecked Sendable {
     static let shared = BarkSettings()
-    private init(){
-        
-    }
+    private init() {}
     
-    subscript(key:String) -> String? {
+    subscript(key: String) -> String? {
         get {
             let storeKey = Key<String>(key)
             return Defaults.shared.get(for: storeKey)
@@ -42,7 +42,7 @@ class BarkSettings{
         }
     }
     
-    subscript(key:BarkSettingKey) -> String? {
+    subscript(key: BarkSettingKey) -> String? {
         get {
             return self[key.rawValue]
         }
@@ -51,7 +51,7 @@ class BarkSettings{
         }
     }
     
-    subscript<T : Codable>(key:String) -> T? {
+    subscript<T: Codable>(key: String) -> T? {
         get {
             let storeKey = Key<T>(key)
             return Defaults.shared.get(for: storeKey)
@@ -66,7 +66,8 @@ class BarkSettings{
             }
         }
     }
-    subscript<T : Codable>(key:BarkSettingKey) -> T? {
+
+    subscript<T: Codable>(key: BarkSettingKey) -> T? {
         get {
             return self[key.rawValue]
         }

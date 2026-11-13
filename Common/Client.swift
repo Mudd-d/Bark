@@ -6,101 +6,79 @@
 //  Copyright © 2018 Fin. All rights reserved.
 //
 
+import RxCocoa
+import RxSwift
 import UIKit
 import UserNotifications
-import RxSwift
-import RxCocoa
 
 class Client: NSObject {
     static let shared = Client()
-    private override init() {
+    override private init() {
         super.init()
     }
-    var currentNavigationController:UINavigationController? {
-        get {
-            let controller = UIApplication.shared.delegate?.window??.rootViewController as? BarkSnackbarController
-            let nav = (controller?.rootViewController as? UITabBarController)?.selectedViewController as? UINavigationController
-            return nav
+
+    var window: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
+    }
+
+    var currentSnackbarController: BarkSnackbarController? {
+        return self.window?.rootViewController as? BarkSnackbarController
+    }
+
+    var currentTabBarController: StateRestoringTabBarContr? {
+        guard let snackbarController = self.currentSnackbarController else {
+            return nil
+        }
+        if #available(iOS 14, *), UIDevice.current.userInterfaceIdiom == .pad {
+            return (snackbarController.rootViewController as? BarkSplitViewController)?.compactController
+        } else {
+            return snackbarController.rootViewController as? BarkTabBarController
         }
     }
-    var currentTabBarController:StateStorageTabBarController? {
+
+    var currentTabPage: TabPage {
         get {
-            let controller = UIApplication.shared.delegate?.window??.rootViewController as? BarkSnackbarController
-            return controller?.rootViewController as? StateStorageTabBarController
-        }
-    }
-    
-    let appVersion:String = {
-        var version = "0.0.0"
-        if let infoDict = Bundle.main.infoDictionary {
-            if let appVersion = infoDict["CFBundleVersion"] as? String {
-                version = appVersion
+            guard let tabBarController = self.currentTabBarController else {
+                return .unknown
             }
-        }
-        return version
-    }()
-    
-    private var _key:String?
-    var key:String? {
-        get {
-            if _key == nil, let aKey = Settings[.key]{
-                _key = aKey
-            }
-            return _key
+            return TabPage(rawValue: tabBarController.selectedIndex) ?? .unknown
         }
         set {
-            _key = newValue
-            Settings[.key] = newValue
+            guard let tabBarController = self.currentTabBarController else {
+                return
+            }
+            tabBarController.currentSelectedIndex = newValue.rawValue
         }
     }
     
-    enum ClienState {
-        case ok
-        case unRegister
-        case serverError
-    }
-    
-    var state = BehaviorRelay<ClienState>(value: .ok)
-    
-    var dispose:Disposable?
-    func bindDeviceToken(){
-        if let token = Settings[.deviceToken] , token.count > 0{
-            dispose?.dispose()
-            
-            dispose = BarkApi.provider
-                .request(.register(
-                            key: key,
-                            devicetoken: token))
-                .filterResponseError()
-                .map { (json) -> ClienState in
-                    switch json {
-                    case .success(let json):
-                        if let key = json["data","key"].rawString() {
-                            Client.shared.key = key
-                            return .ok
-                        }
-                        else{
-                            return .serverError
-                        }
-                    case .failure:
-                        return .serverError
-                    }
-                }
-                .bind(to: state)
-        }
-    }
+    var deviceToken = BehaviorRelay<String?>(value: nil)
     
     func registerForRemoteNotifications() {
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert , .sound , .badge], completionHandler: {(_ granted: Bool, _ error: Error?) -> Void in
+        center.requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert], completionHandler: { (_ granted: Bool, _: Error?) in
             if granted {
                 dispatch_sync_safely_main_queue {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
-            }
-            else{
+            } else {
                 print("没有打开推送")
             }
         })
+    }
+    
+    func openUrl(url: URL) {
+        if ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            UIApplication.shared.open(url, options: [UIApplication.OpenExternalURLOptionsKey.universalLinksOnly: true]) { success in
+                if !success {
+                    // 打不开Universal Link时，则用 safari 打开
+                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                }
+            }
+        } else {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        }
     }
 }

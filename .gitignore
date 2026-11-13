@@ -10,3 +10,5 @@ Pods/
 .DS_Store
 ._.*
 xcuserdata
+buildServer.json
+*.p8

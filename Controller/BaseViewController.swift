@@ -6,33 +6,37 @@
 //  Copyright © 2018 Fin. All rights reserved.
 //
 
-import UIKit
 import Material
-class BaseViewController: UIViewController {
-    
-    let viewModel:ViewModel
-    init(viewModel:ViewModel) {
+import UIKit
+
+class BaseViewController<T>: UIViewController where T: ViewModel {
+    let viewModel: T
+    init(viewModel: T) {
         self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
-        
-        self.view.backgroundColor = Color.grey.lighten5
     }
     
+    @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override var preferredStatusBarStyle: UIStatusBarStyle{
-        get {
-            return .lightContent
-        }
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        return .lightContent
     }
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        self.navigationItem.largeTitleDisplayMode = .automatic
+        self.view.backgroundColor = BKColor.background.primary
+        
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            navigationItem.largeTitleDisplayMode = .never
+        } else {
+            navigationItem.largeTitleDisplayMode = .automatic
+        }
         makeUI()
     }
+
     var isViewModelBinded = false
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -42,10 +46,7 @@ class BaseViewController: UIViewController {
         }
     }
     
-    func makeUI() {
-        
-    }
-    func bindViewModel(){
-        
-    }
+    func makeUI() {}
+
+    func bindViewModel() {}
 }

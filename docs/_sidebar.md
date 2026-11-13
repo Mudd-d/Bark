@@ -1,0 +1,12 @@
+- [Bark](/#bark)
+- **App**
+  - [使用教程](/tutorial)
+  - [请求参数](/params)
+  - [推送加密](/encryption)
+  - [常见问题](/faq)
+- **服务端**
+  - [部署服务](/deploy)
+  - [批量推送](/batch)
+  - [编译代码](/build)
+  - [推送证书](/cert)
+- [隐私安全](/privacy)

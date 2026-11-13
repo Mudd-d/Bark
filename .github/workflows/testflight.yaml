@@ -1,11 +1,15 @@
-name: Deploy to Testflight 
+name: Deploy to App Store 
 
 on:
   workflow_dispatch:
     inputs:
+      storeVersionNumber:
+        description: 'Store Version Number'
+        required: true
+        default: ""
       buildNumber:
         description: 'Build Number'
-        required: false
+        required: true
         default: ""
 
 jobs:
@@ -14,31 +18,44 @@ jobs:
 
     steps:      
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v5
 
     - name: Select Xcode Version
       uses: maxim-lobanov/setup-xcode@v1
       with:
-        xcode-version: latest-stable
+        xcode-version: 'latest-stable'
 
     - name: Setup ruby
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: 2.7.2
+        ruby-version: '3.4'
         bundler-cache: true
+
+    - uses: actions/cache@v5
+      id: pods-cache
+      with:
+        path: Pods
+        key: ${{ runner.os }}-pods-${{ hashFiles('**/Podfile.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-pods-
 
     - name: Install Pods
       run: pod install
 
-    - name: Build & Distribute to Testflight
+    - name: Build & Distribute to App Store
       run: |
         export LC_ALL=en_US.UTF-8
         export LANG=en_US.UTF-8
-        bundle exec fastlane beta
+        bundle exec fastlane beta store_version_number:${{ github.event.inputs.storeVersionNumber }} build_number:${{ github.event.inputs.buildNumber }}
       env:
         APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
         BARK_KEY: ${{ secrets.BARK_KEY }}
-        BUILD_NUMBER: ${{ github.event.inputs.buildNumber }}
         MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
         MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+
+    - name: Archive artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: dSYM
+        path: Bark.app.dSYM.zip

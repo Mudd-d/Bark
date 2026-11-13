@@ -6,215 +6,208 @@
 //  Copyright © 2018年 Fin. All rights reserved.
 //
 
+import IQKeyboardManagerSwift
+import IQKeyboardToolbarManager
+import SVProgressHUD
+import SwiftyStoreKit
 import UIKit
-import Material
 import UserNotifications
-import RealmSwift
-import IceCream
 
 @UIApplicationMain
-class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate{
+class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var initialPendingMessagesTask: Task<Void, Never>?
 
-    var window: UIWindow?
-    var syncEngine: SyncEngine?
-    func setupRealm() {
-        let groupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.bark")
-        let fileUrl = groupUrl?.appendingPathComponent("bark.realm")
-        let config = Realm.Configuration(
-            fileURL: fileUrl,
-            schemaVersion: 13,
-            migrationBlock: { migration, oldSchemaVersion in
-                // We haven’t migrated anything yet, so oldSchemaVersion == 0
-                if (oldSchemaVersion < 1) {
-                    // Nothing to do!
-                    // Realm will automatically detect new properties and removed properties
-                    // And will update the schema on disk automatically
-                }
-        })
-        // Tell Realm to use this new configuration object for the default Realm
-        Realm.Configuration.defaultConfiguration = config
-
-        //iCloud 同步
-        syncEngine = SyncEngine(objects: [
-            SyncObject(type: Message.self)
-        ], databaseScope: .private)
-
-        #if DEBUG
-        let realm = try? Realm()
-        print("message count: \(realm?.objects(Message.self).count ?? 0)")
-        #endif
-    }
-    
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        //必须在应用一开始就配置，否则应用可能提前在配置之前试用了 Realm() ，则会创建两个独立数据库。
+        // 必须在应用一开始就配置，否则应用可能提前在配置之前试用了 Realm() ，则会创建两个独立数据库。
         setupRealm()
+
+        WatchSyncManager.shared.activate()
         
-        self.window = UIWindow(frame: UIScreen.main.bounds)
-        if #available(iOS 13.0, *) {
-            self.window?.overrideUserInterfaceStyle = .light
-        }
-        let tabBarController = StateStorageTabBarController()
-        tabBarController.tabBar.tintColor = UIColor.black
+        SVProgressHUD.setMinimumDismissTimeInterval(1.5)
         
-        self.window?.backgroundColor = UIColor.black
-        self.window?.rootViewController = BarkSnackbarController(
-            rootViewController: tabBarController
+        IQKeyboardManager.shared.isEnabled = true
+        IQKeyboardToolbarManager.shared.isEnabled = true
+        // 注册 Darwin Notification 监听
+        let notificationCenter = CFNotificationCenterGetDarwinNotifyCenter()
+        CFNotificationCenterAddObserver(
+            notificationCenter,
+            Unmanaged.passUnretained(self).toOpaque(),
+            { _, observer, _, _, _ in
+                guard let observer = observer else { return }
+                let appDelegate = Unmanaged<AppDelegate>.fromOpaque(observer).takeUnretainedValue()
+                Task {
+                    await appDelegate.processPendingMessages()
+                }
+            },
+            "com.bark.newmessage" as CFString,
+            nil,
+            .deliverImmediately
         )
         
-        tabBarController.viewControllers = [
-            BarkNavigationController(rootViewController:HomeViewController(viewModel: HomeViewModel())),
-            BarkNavigationController(rootViewController:MessageListViewController(viewModel: MessageListViewModel())),
-            BarkNavigationController(rootViewController:MessageSettingsViewController(viewModel: MessageSettingsViewModel())),
-        ]
-        
-        let tabBarItems = [UITabBarItem(title: NSLocalizedString("service"), image: UIImage(named: "baseline_gite_black_24pt"), tag: 0),
-                           UITabBarItem(title: NSLocalizedString("historyMessage"), image: Icon.history, tag: 1),
-                           UITabBarItem(title: NSLocalizedString("settings"), image: UIImage(named: "baseline_manage_accounts_black_24pt"), tag: 2)]
-        for (index , viewController) in tabBarController.viewControllers!.enumerated() {
-            viewController.tabBarItem = tabBarItems[index]
+        // 处理可能在启动前积累的消息
+        initialPendingMessagesTask = Task {
+            await processPendingMessages()
         }
         
-        self.window?.makeKeyAndVisible()
-
         UNUserNotificationCenter.current().delegate = self
+        var actions = [
+            UNNotificationAction(identifier: "copy", title: "Copy2".localized, options: UNNotificationActionOptions.foreground)
+        ]
+        if #available(iOSApplicationExtension 15.0, *) {
+            actions.append(UNNotificationAction(identifier: "mute", title: "muteGroup1Hour".localized, options: UNNotificationActionOptions.foreground))
+            actions.append(UNNotificationAction(identifier: "mute10Minutes", title: "muteGroup10Minutes".localized, options: UNNotificationActionOptions.foreground))
+        }
         UNUserNotificationCenter.current().setNotificationCategories([
-            UNNotificationCategory(identifier: "myNotificationCategory", actions: [
-                UNNotificationAction(identifier: "copy", title: NSLocalizedString("Copy2"), options: UNNotificationActionOptions.foreground)
-                ], intentIdentifiers: [], options: .customDismissAction)
-            ])
+            // customDismissAction 会在 clear 推送时，调起APP，这时可以顺便更新下 DeviceToken，防止过期。
+            UNNotificationCategory(identifier: "myNotificationCategory", actions: actions, intentIdentifiers: [], options: .customDismissAction)
+        ])
 
-        UNUserNotificationCenter.current().getNotificationSettings { (settings) in
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
             dispatch_sync_safely_main_queue {
                 if settings.authorizationStatus == .authorized {
                     Client.shared.registerForRemoteNotifications()
                 }
             }
         }
-        
-        //调整返回按钮样式
+
+        // 调整返回按钮样式
         let bar = UINavigationBar.appearance(whenContainedInInstancesOf: [BarkNavigationController.self])
         bar.backIndicatorImage = UIImage(named: "back")
         bar.backIndicatorTransitionMaskImage = UIImage(named: "back")
-        bar.tintColor = Color.darkText.primary
+        bar.tintColor = BKColor.grey.darken4
 
+        // 内购
+        SwiftyStoreKit.completeTransactions { _ in }
         return true
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         print(error)
     }
-    
+
+    func waitForInitialPendingMessages() async {
+        await initialPendingMessagesTask?.value
+    }
+
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let deviceTokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
-        Settings[.deviceToken] = deviceTokenString
-        
-        //注册设备
-        Client.shared.bindDeviceToken()
+        Client.shared.deviceToken.accept(deviceTokenString)
+
+        // 注册设备
+        ServerManager.shared.syncAllServers()
     }
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        notificatonHandler(userInfo: notification.request.content.userInfo)
-    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        notificatonHandler(userInfo: response.notification.request.content.userInfo)
+        defer { completionHandler() }
+        guard response.actionIdentifier != UNNotificationDismissActionIdentifier else {
+            // clear 推送时，不要弹出提示框
+            return
+        }
+        handleNotification(userInfo: response.notification.request.content.userInfo)
     }
-    private func notificatonHandler(userInfo:[AnyHashable:Any]){
-        
-        let navigationController = Client.shared.currentNavigationController
-        func presentController(){
-            let alert = (userInfo["aps"] as? [String:Any])?["alert"] as? [String:Any]
-            let title = alert?["title"] as? String
-            let body = alert?["body"] as? String
-            let url:URL? = {
-                if let url = userInfo["url"] as? String {
-                    return URL(string: url)
-                }
-                return nil
-            }()
-            
-            //URL 直接打开
-            if let url = url {
-                if ["http","https"].contains(url.scheme?.lowercased() ?? ""){
-                    navigationController?.present(BarkSFSafariViewController(url: url), animated: true, completion: nil)
-                }
-                else{
-                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                }
-                return
-            }
-            
-            
-            let alertController = UIAlertController(title: title, message: body, preferredStyle: .alert)
-            alertController.addAction(UIAlertAction(title: "复制内容", style: .default, handler: { (_) in
-                if let copy = userInfo["copy"] as? String {
-                    UIPasteboard.general.string = copy
-                }
-                else{
-                    UIPasteboard.general.string = body
-                }
-            }))
-            alertController.addAction(UIAlertAction(title: "更多操作", style: .default, handler: { (_) in
-                var shareContent = ""
-                if let title = title {
-                    shareContent += "\(title)\n"
-                }
-                if let body = body {
-                    shareContent += "\(body)\n"
-                }
-                for (key,value) in userInfo {
-                    if ["aps","title","body","url"].contains((key as? String) ?? "") {
-                        continue
-                    }
-                    shareContent += "\(key): \(value) \n"
-                }
-                var items:[Any] = []
-                items.append(shareContent)
-                if let url = url{
-                    items.append(url)
-                }
-                let controller = UIApplication.shared.keyWindow?.rootViewController
-                let activityController = UIActivityViewController(activityItems: items,
-                                                                  applicationActivities: nil)
-                controller?.present(activityController, animated: true, completion: nil)
-            }))
-            alertController.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
-            
-            navigationController?.present(alertController, animated: true, completion: nil)
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let delete = userInfo["delete"] as? String, delete == "1", let id = userInfo["id"] as? String else {
+            completionHandler(.noData)
+            return
         }
         
-        if let presentedController = navigationController?.presentedViewController {
-            presentedController.dismiss(animated: false) {
-                presentController()
+        // 删除通知中心推送
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
+
+        // 删除历史记录
+        Task {
+            do {
+                try await MessageDeletionCoordinator.delete(ids: [id])
+                notifyMessagesDidChange()
+                completionHandler(.newData)
+            } catch {
+                completionHandler(.failed)
             }
         }
-        else{
-            presentController()
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        return .alert
+    }
+    
+    func handleNotification(userInfo: [AnyHashable: Any]) {
+        let action = userInfo["action"] as? String
+        if action == "none" {
+            return
         }
-    }
-
-    func applicationWillResignActive(_ application: UIApplication) {
-        // Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
-        // Use this method to pause ongoing tasks, disable timers, and invalidate graphics rendering callbacks. Games should use this method to pause the game.
-    }
-
-    func applicationDidEnterBackground(_ application: UIApplication) {
-        // Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later.
-        // If your application supports background execution, this method is called instead of applicationWillTerminate: when the user quits.
-    }
-
-    func applicationWillEnterForeground(_ application: UIApplication) {
-        if (Client.shared.key?.count ?? 0) <= 0{
-            Client.shared.bindDeviceToken()
+        
+        // 如果有 URL 直接打开
+        if let url = try? (userInfo["url"] as? String)?.asURL() {
+            Client.shared.openUrl(url: url)
+            return
         }
-    }
+        
+        if action == "alert" {
+            alertNotification(userInfo: userInfo)
+        }
 
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+        // 跳转到消息列表tab
+        Client.shared.currentTabPage = .messageHistory
     }
-
-    func applicationWillTerminate(_ application: UIApplication) {
-        // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
-    }
-
 
 }
 
+extension AppDelegate {
+    func alertNotification(userInfo: [AnyHashable: Any]) {
+        let alert = (userInfo["aps"] as? [String: Any])?["alert"] as? [String: Any]
+        let title = alert?["title"] as? String
+        let subtitle = alert?["subtitle"] as? String
+        let body = alert?["body"] as? String
+        let url = try? (userInfo["url"] as? String)?.asURL()
+
+        let alertController = UIAlertController(title: title, message: body, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: "CopyContent".localized, style: .default, handler: { _ in
+            if let copy = userInfo["copy"] as? String {
+                UIPasteboard.general.string = copy
+            } else {
+                UIPasteboard.general.string = body
+            }
+        }))
+        alertController.addAction(UIAlertAction(title: "MoreActions".localized, style: .default, handler: { _ in
+            var shareContent = ""
+            if let title = title {
+                shareContent += "\(title)\n"
+            }
+            if let subtitle = subtitle {
+                shareContent += "\(subtitle)\n"
+            }
+            if let body = body {
+                shareContent += "\(body)\n"
+            }
+            for (key, value) in userInfo {
+                if ["aps", "title", "subtitle", "body", "url"].contains((key as? String) ?? "") {
+                    continue
+                }
+                shareContent += "\(key): \(value) \n"
+            }
+            var items: [Any] = []
+            items.append(shareContent)
+            if let url = url {
+                items.append(url)
+            }
+            let controller = Client.shared.window?.rootViewController
+            let activityController = UIActivityViewController(activityItems: items,
+                                                              applicationActivities: nil)
+            if let popover = activityController.popoverPresentationController {
+                popover.sourceView = controller?.view
+                popover.sourceRect = CGRect(x: controller?.view.bounds.midX ?? 0, y: controller?.view.bounds.midY ?? 0, width: 0, height: 0)
+            }
+            controller?.present(activityController, animated: true, completion: nil)
+        }))
+        alertController.addAction(UIAlertAction(title: "Cancel".localized, style: .cancel, handler: nil))
+
+        let viewController = Client.shared.currentSnackbarController
+        
+        if let presentedController = viewController?.presentedViewController {
+            presentedController.dismiss(animated: false) {
+                viewController?.present(alertController, animated: true, completion: nil)
+            }
+        } else {
+            viewController?.present(alertController, animated: true, completion: nil)
+        }
+    }
+}

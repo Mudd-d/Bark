@@ -6,25 +6,19 @@
 //  Copyright © 2018 Fin. All rights reserved.
 //
 
-import UIKit
 import SafariServices
+import UIKit
+
 class BarkSFSafariViewController: SFSafariViewController {
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
-        // Do any additional setup after loading the view.
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        return .default
     }
 
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-        // Dispose of any resources that can be recreated.
-    }
-    
-    override var preferredStatusBarStyle: UIStatusBarStyle{
-        get {
-            return .default
+    deinit {
+        if #available(iOS 16.0, *) {
+            Task {
+                await SFSafariViewController.DataStore.default.clearWebsiteData()
+            }
         }
     }
-
 }
